@@ -1,6 +1,6 @@
 {
   "name": "stats-bar",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "One line above the Claude Code prompt: plan limits, plus tokens and cost for this session, 7 days, 30 days and all time",
   "types": "./types/index.d.ts",
   "license": "MIT"

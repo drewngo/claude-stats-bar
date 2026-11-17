@@ -80,13 +80,8 @@ async function refresh($: EngineInterface) {
     const parsed: Totals = JSON.parse(stdout)
     await update($, totals, () => parsed)
     await update($, lastError, () => null)
-    const { cost, rateLimits } = await $.session.usage()
+    const { cost } = await $.session.usage()
     await update($, sessionUsd, () => cost?.usd ?? null)
-    await update($, limits, () =>
-      rateLimits
-        .filter(r => r.kind in LIMIT_LABELS)
-        .map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt })),
-    )
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
     $.ui.log(`stats-bar refresh failed: ${message}`, { to: 'debug' })
@@ -96,6 +91,33 @@ async function refresh($: EngineInterface) {
   }
 }
 
+// The engine has no rate-limit reading until the session's first API response,
+// so the last one is kept across sessions and shown until a fresh one arrives.
+async function storeLimits($: EngineInterface, rateLimits: Limit[]) {
+  const shown = rateLimits
+    .filter(r => r.kind in LIMIT_LABELS)
+    .map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt }))
+  if (shown.length === 0) {
+    return
+  }
+  await update($, limits, () => shown)
+  await $.store.set('limits', shown)
+}
+
+async function restoreLimits($: EngineInterface) {
+  if ((await read($, limits)).length > 0) {
+    return
+  }
+  const saved = await $.store.get('limits')
+  if (!Array.isArray(saved)) {
+    return
+  }
+  const now = await $.clock.now()
+  // A window that has reset since the reading no longer has that usage.
+  const live = (saved as Limit[]).filter(l => !l.resetsAt || Date.parse(l.resetsAt) > now)
+  await update($, limits, () => live)
+}
+
 export const register: Register = on => {
   on('session.start', async ($, e, next) => {
     const started = await next(e)
@@ -103,10 +125,17 @@ export const register: Register = on => {
       name: 'stats-bar',
       description: 'Show or hide the stats bar above the prompt',
     })
+    await restoreLimits($)
     void refresh($)
     $.clock.every(60_000, () => void refresh($))
 
     return started
+  })
+
+  on('session.measure', async ($, e, next) => {
+    await storeLimits($, e.rateLimits)
+
+    return next(e)
   })
 
   on('turn.complete', async ($, e, next) => {
